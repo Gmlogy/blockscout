@@ -12,20 +12,20 @@ defmodule Explorer.Chain.CSVExport.Helper do
       where: 3
     ]
 
+  @limit 10_000
   @page_size 150
   @default_paging_options %PagingOptions{page_size: @page_size}
 
   def dump_to_stream(items) do
-    res =
-      items
-      |> RFC4180.dump_to_stream()
-
-    res
+    items
+    |> RFC4180.dump_to_stream()
   end
 
   def page_size, do: @page_size
 
   def default_paging_options, do: @default_paging_options
+
+  def limit, do: @limit
 
   def block_from_period(from_period, to_period) do
     from_block = Chain.convert_date_to_min_block(from_period)
@@ -88,16 +88,16 @@ defmodule Explorer.Chain.CSVExport.Helper do
     ["to", "from"]
   end
 
-  @spec is_valid_filter?(String.t(), String.t(), String.t()) :: boolean()
-  def is_valid_filter?(filter_type, filter_value, item_type) do
-    is_valid_filter_type(filter_type, filter_value, item_type) && is_valid_filter_value(filter_type, filter_value)
+  @spec valid_filter?(String.t(), String.t(), String.t()) :: boolean()
+  def valid_filter?(filter_type, filter_value, item_type) do
+    valid_filter_type?(filter_type, filter_value, item_type) && valid_filter_value?(filter_type, filter_value)
   end
 
-  defp is_valid_filter_type(filter_type, filter_value, item_type) do
+  defp valid_filter_type?(filter_type, filter_value, item_type) do
     filter_type in supported_filters(item_type) && filter_value && filter_value !== ""
   end
 
-  defp is_valid_filter_value(filter_type, filter_value) do
+  defp valid_filter_value?(filter_type, filter_value) do
     case filter_type do
       "address" ->
         filter_value in supported_address_filter_values()

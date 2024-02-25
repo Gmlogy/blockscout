@@ -9,6 +9,7 @@ defmodule Indexer.Block.Catchup.Fetcher do
 
   import Indexer.Block.Fetcher,
     only: [
+      async_import_blobs: 1,
       async_import_block_rewards: 1,
       async_import_coin_balances: 2,
       async_import_created_contract_codes: 1,
@@ -23,6 +24,7 @@ defmodule Indexer.Block.Catchup.Fetcher do
 
   alias Ecto.Changeset
   alias Explorer.Chain
+  alias Explorer.Chain.NullRoundHeight
   alias Explorer.Utility.MissingRangesManipulator
   alias Indexer.{Block, Tracer}
   alias Indexer.Block.Catchup.{Sequence, TaskSupervisor}
@@ -55,7 +57,9 @@ defmodule Indexer.Block.Catchup.Fetcher do
           shrunk: false
         }
 
-      missing_ranges ->
+      latest_missing_ranges ->
+        missing_ranges = filter_consensus_blocks(latest_missing_ranges)
+
         first.._ = List.first(missing_ranges)
         _..last = List.last(missing_ranges)
 
@@ -83,6 +87,21 @@ defmodule Indexer.Block.Catchup.Fetcher do
           shrunk: shrunk
         }
     end
+  end
+
+  defp filter_consensus_blocks(ranges) do
+    filtered_ranges =
+      ranges
+      |> Enum.map(&Chain.missing_block_number_ranges(&1))
+      |> List.flatten()
+
+    consensus_blocks = ranges_to_numbers(ranges) -- ranges_to_numbers(filtered_ranges)
+
+    consensus_blocks
+    |> numbers_to_ranges()
+    |> MissingRangesManipulator.clear_batch()
+
+    filtered_ranges
   end
 
   @doc """
@@ -146,6 +165,7 @@ defmodule Indexer.Block.Catchup.Fetcher do
     async_import_uncles(imported)
     async_import_replaced_transactions(imported)
     async_import_token_instances(imported)
+    async_import_blobs(imported)
   end
 
   defp stream_fetch_and_import(state, sequence)
@@ -181,7 +201,8 @@ defmodule Indexer.Block.Catchup.Fetcher do
 
     case result do
       {:ok, %{inserted: inserted, errors: errors}} ->
-        errors = cap_seq(sequence, errors)
+        valid_errors = handle_null_rounds(errors)
+        errors = cap_seq(sequence, valid_errors)
         retry(sequence, errors)
         clear_missing_ranges(range, errors)
 
@@ -230,10 +251,21 @@ defmodule Indexer.Block.Catchup.Fetcher do
   rescue
     exception ->
       Logger.error(fn -> [Exception.format(:error, exception, __STACKTRACE__), ?\n, ?\n, "Retrying."] end)
-
-      push_back(sequence, range)
-
       {:error, exception}
+  end
+
+  defp handle_null_rounds(errors) do
+    {null_rounds, other_errors} =
+      Enum.split_with(errors, fn
+        %{message: "requested epoch was a null round"} -> true
+        _ -> false
+      end)
+
+    null_rounds
+    |> Enum.map(&block_error_to_number/1)
+    |> NullRoundHeight.insert_heights()
+
+    other_errors
   end
 
   defp cap_seq(seq, errors) do
@@ -289,14 +321,14 @@ defmodule Indexer.Block.Catchup.Fetcher do
 
   defp numbers_to_ranges(numbers) when is_list(numbers) do
     numbers
-    |> Enum.sort()
+    |> Enum.sort(&>=/2)
     |> Enum.chunk_while(
       nil,
       fn
         number, nil ->
           {:cont, number..number}
 
-        number, first..last when number == last + 1 ->
+        number, first..last when number == last - 1 ->
           {:cont, first..number}
 
         number, range ->
@@ -304,6 +336,12 @@ defmodule Indexer.Block.Catchup.Fetcher do
       end,
       fn range -> {:cont, range, nil} end
     )
+  end
+
+  defp ranges_to_numbers(ranges) do
+    ranges
+    |> Enum.map(&Enum.to_list/1)
+    |> List.flatten()
   end
 
   defp put_memory_monitor(sequence_options, %__MODULE__{memory_monitor: nil}) when is_list(sequence_options),

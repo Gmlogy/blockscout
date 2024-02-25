@@ -1,14 +1,19 @@
 defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
   use BlockScoutWeb.ConnCase
 
-  import EthereumJSONRPC, only: [integer_to_quantity: 1]
   import Explorer.Chain, only: [hash_to_lower_case_string: 1]
-  import Mox
 
   alias BlockScoutWeb.Models.UserFromAuth
   alias Explorer.Account.WatchlistAddress
   alias Explorer.Chain.{Address, InternalTransaction, Log, Token, TokenTransfer, Transaction}
   alias Explorer.Repo
+
+  @first_topic_hex_string_1 "0x99e7b0ba56da2819c37c047f0511fd2bf6c9b4e27b4a979a19d6da0f74be8155"
+
+  defp topic(topic_hex_string) do
+    {:ok, topic} = Explorer.Chain.Hash.Full.cast(topic_hex_string)
+    topic
+  end
 
   setup do
     Supervisor.terminate_child(Explorer.Supervisor, Explorer.Chain.Cache.TransactionsApiV2.child_id())
@@ -240,6 +245,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
         block_number: tx.block_number,
         token_contract_address: token.contract_address,
         token_ids: Enum.map(0..50, fn x -> x end),
+        token_type: "ERC-1155",
         amounts: Enum.map(0..50, fn x -> x end)
       )
 
@@ -266,6 +272,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
           block_number: tx.block_number,
           token_contract_address: token.contract_address,
           token_ids: [1],
+          token_type: "ERC-1155",
           amounts: [2],
           amount: nil
         )
@@ -576,7 +583,8 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
             block: tx.block,
             block_number: tx.block_number,
             token_contract_address: erc_1155_token.contract_address,
-            token_ids: [x]
+            token_ids: [x],
+            token_type: "ERC-1155"
           )
         end
         |> Enum.reverse()
@@ -590,7 +598,8 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
             block: tx.block,
             block_number: tx.block_number,
             token_contract_address: erc_721_token.contract_address,
-            token_ids: [x]
+            token_ids: [x],
+            token_type: "ERC-721"
           )
         end
         |> Enum.reverse()
@@ -603,7 +612,8 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
             transaction: tx,
             block: tx.block,
             block_number: tx.block_number,
-            token_contract_address: erc_20_token.contract_address
+            token_contract_address: erc_20_token.contract_address,
+            token_type: "ERC-20"
           )
         end
         |> Enum.reverse()
@@ -718,6 +728,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
             block_number: tx.block_number,
             token_contract_address: token.contract_address,
             token_ids: Enum.map(0..50, fn _x -> id end),
+            token_type: "ERC-1155",
             amounts: Enum.map(0..50, fn x -> x end)
           )
         end
@@ -753,7 +764,8 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
             block: tx.block,
             block_number: tx.block_number,
             token_contract_address: token.contract_address,
-            token_ids: [i]
+            token_ids: [i],
+            token_type: "ERC-721"
           )
         end
 
@@ -783,6 +795,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
           block_number: tx.block_number,
           token_contract_address: token.contract_address,
           token_ids: Enum.map(0..50, fn x -> x end),
+          token_type: "ERC-1155",
           amounts: Enum.map(0..50, fn x -> x end)
         )
 
@@ -818,6 +831,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
           block_number: tx.block_number,
           token_contract_address: token.contract_address,
           token_ids: Enum.map(0..24, fn x -> x end),
+          token_type: "ERC-1155",
           amounts: Enum.map(0..24, fn x -> x end)
         )
 
@@ -833,6 +847,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
           block_number: tx.block_number,
           token_contract_address: token.contract_address,
           token_ids: Enum.map(25..49, fn x -> x end),
+          token_type: "ERC-1155",
           amounts: Enum.map(25..49, fn x -> x end)
         )
 
@@ -848,6 +863,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
           block_number: tx.block_number,
           token_contract_address: token.contract_address,
           token_ids: [50],
+          token_type: "ERC-1155",
           amounts: [50]
         )
 
@@ -874,6 +890,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
           block_number: tx.block_number,
           token_contract_address: token.contract_address,
           token_ids: Enum.map(0..24, fn x -> x end),
+          token_type: "ERC-1155",
           amounts: Enum.map(0..24, fn x -> x end)
         )
 
@@ -889,6 +906,7 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
           block_number: tx.block_number,
           token_contract_address: token.contract_address,
           token_ids: Enum.map(25..50, fn x -> x end),
+          token_type: "ERC-1155",
           amounts: Enum.map(25..50, fn x -> x end)
         )
 
@@ -956,12 +974,179 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
     end
   end
 
+  describe "stability fees" do
+    setup %{conn: conn} do
+      old_env = Application.get_env(:explorer, :chain_type)
+
+      Application.put_env(:explorer, :chain_type, "stability")
+
+      on_exit(fn ->
+        Application.put_env(:explorer, :chain_type, old_env)
+      end)
+
+      %{conn: conn}
+    end
+
+    test "check stability fees", %{conn: conn} do
+      tx = insert(:transaction) |> with_block()
+
+      _log =
+        insert(:log,
+          transaction: tx,
+          index: 1,
+          block: tx.block,
+          block_number: tx.block_number,
+          first_topic: topic(@first_topic_hex_string_1),
+          data:
+            "0x000000000000000000000000dc2b93f3291030f3f7a6d9363ac37757f7ad5c4300000000000000000000000000000000000000000000000000002824369a100000000000000000000000000046b555cb3962bf9533c437cbd04a2f702dfdb999000000000000000000000000000000000000000000000000000014121b4d0800000000000000000000000000faf7a981360c2fab3a5ab7b3d6d8d0cf97a91eb9000000000000000000000000000000000000000000000000000014121b4d0800"
+        )
+
+      insert(:token, contract_address: build(:address, hash: "0xDc2B93f3291030F3F7a6D9363ac37757f7AD5C43"))
+      request = get(conn, "/api/v2/transactions")
+
+      assert %{
+               "items" => [
+                 %{
+                   "stability_fee" => %{
+                     "token" => %{"address" => "0xDc2B93f3291030F3F7a6D9363ac37757f7AD5C43"},
+                     "validator_address" => %{"hash" => "0x46B555CB3962bF9533c437cBD04A2f702dfdB999"},
+                     "dapp_address" => %{"hash" => "0xFAf7a981360c2FAb3a5Ab7b3D6d8D0Cf97a91Eb9"},
+                     "total_fee" => "44136000000000",
+                     "dapp_fee" => "22068000000000",
+                     "validator_fee" => "22068000000000"
+                   }
+                 }
+               ]
+             } = json_response(request, 200)
+
+      request = get(conn, "/api/v2/transactions/#{to_string(tx.hash)}")
+
+      assert %{
+               "stability_fee" => %{
+                 "token" => %{"address" => "0xDc2B93f3291030F3F7a6D9363ac37757f7AD5C43"},
+                 "validator_address" => %{"hash" => "0x46B555CB3962bF9533c437cBD04A2f702dfdB999"},
+                 "dapp_address" => %{"hash" => "0xFAf7a981360c2FAb3a5Ab7b3D6d8D0Cf97a91Eb9"},
+                 "total_fee" => "44136000000000",
+                 "dapp_fee" => "22068000000000",
+                 "validator_fee" => "22068000000000"
+               }
+             } = json_response(request, 200)
+
+      request = get(conn, "/api/v2/addresses/#{to_string(tx.from_address_hash)}/transactions")
+
+      assert %{
+               "items" => [
+                 %{
+                   "stability_fee" => %{
+                     "token" => %{"address" => "0xDc2B93f3291030F3F7a6D9363ac37757f7AD5C43"},
+                     "validator_address" => %{"hash" => "0x46B555CB3962bF9533c437cBD04A2f702dfdB999"},
+                     "dapp_address" => %{"hash" => "0xFAf7a981360c2FAb3a5Ab7b3D6d8D0Cf97a91Eb9"},
+                     "total_fee" => "44136000000000",
+                     "dapp_fee" => "22068000000000",
+                     "validator_fee" => "22068000000000"
+                   }
+                 }
+               ]
+             } = json_response(request, 200)
+    end
+
+    test "check stability if token absent in DB", %{conn: conn} do
+      tx = insert(:transaction) |> with_block()
+
+      _log =
+        insert(:log,
+          transaction: tx,
+          index: 1,
+          block: tx.block,
+          block_number: tx.block_number,
+          first_topic: topic(@first_topic_hex_string_1),
+          data:
+            "0x000000000000000000000000dc2b93f3291030f3f7a6d9363ac37757f7ad5c4300000000000000000000000000000000000000000000000000002824369a100000000000000000000000000046b555cb3962bf9533c437cbd04a2f702dfdb999000000000000000000000000000000000000000000000000000014121b4d0800000000000000000000000000faf7a981360c2fab3a5ab7b3d6d8d0cf97a91eb9000000000000000000000000000000000000000000000000000014121b4d0800"
+        )
+
+      request = get(conn, "/api/v2/transactions")
+
+      assert %{
+               "items" => [
+                 %{
+                   "stability_fee" => %{
+                     "token" => %{"address" => "0xDc2B93f3291030F3F7a6D9363ac37757f7AD5C43"},
+                     "validator_address" => %{"hash" => "0x46B555CB3962bF9533c437cBD04A2f702dfdB999"},
+                     "dapp_address" => %{"hash" => "0xFAf7a981360c2FAb3a5Ab7b3D6d8D0Cf97a91Eb9"},
+                     "total_fee" => "44136000000000",
+                     "dapp_fee" => "22068000000000",
+                     "validator_fee" => "22068000000000"
+                   }
+                 }
+               ]
+             } = json_response(request, 200)
+
+      request = get(conn, "/api/v2/transactions/#{to_string(tx.hash)}")
+
+      assert %{
+               "stability_fee" => %{
+                 "token" => %{"address" => "0xDc2B93f3291030F3F7a6D9363ac37757f7AD5C43"},
+                 "validator_address" => %{"hash" => "0x46B555CB3962bF9533c437cBD04A2f702dfdB999"},
+                 "dapp_address" => %{"hash" => "0xFAf7a981360c2FAb3a5Ab7b3D6d8D0Cf97a91Eb9"},
+                 "total_fee" => "44136000000000",
+                 "dapp_fee" => "22068000000000",
+                 "validator_fee" => "22068000000000"
+               }
+             } = json_response(request, 200)
+
+      request = get(conn, "/api/v2/addresses/#{to_string(tx.from_address_hash)}/transactions")
+
+      assert %{
+               "items" => [
+                 %{
+                   "stability_fee" => %{
+                     "token" => %{"address" => "0xDc2B93f3291030F3F7a6D9363ac37757f7AD5C43"},
+                     "validator_address" => %{"hash" => "0x46B555CB3962bF9533c437cBD04A2f702dfdB999"},
+                     "dapp_address" => %{"hash" => "0xFAf7a981360c2FAb3a5Ab7b3D6d8D0Cf97a91Eb9"},
+                     "total_fee" => "44136000000000",
+                     "dapp_fee" => "22068000000000",
+                     "validator_fee" => "22068000000000"
+                   }
+                 }
+               ]
+             } = json_response(request, 200)
+    end
+  end
+
   defp compare_item(%Transaction{} = transaction, json) do
     assert to_string(transaction.hash) == json["hash"]
     assert transaction.block_number == json["block"]
     assert to_string(transaction.value.value) == json["value"]
     assert Address.checksum(transaction.from_address_hash) == json["from"]["hash"]
     assert Address.checksum(transaction.to_address_hash) == json["to"]["hash"]
+  end
+
+  defp compare_item(%InternalTransaction{} = internal_tx, json) do
+    assert internal_tx.block_number == json["block"]
+    assert to_string(internal_tx.gas) == json["gas_limit"]
+    assert internal_tx.index == json["index"]
+    assert to_string(internal_tx.transaction_hash) == json["transaction_hash"]
+    assert Address.checksum(internal_tx.from_address_hash) == json["from"]["hash"]
+    assert Address.checksum(internal_tx.to_address_hash) == json["to"]["hash"]
+  end
+
+  defp compare_item(%Log{} = log, json) do
+    assert to_string(log.data) == json["data"]
+    assert log.index == json["index"]
+    assert Address.checksum(log.address_hash) == json["address"]["hash"]
+    assert to_string(log.transaction_hash) == json["tx_hash"]
+    assert json["block_number"] == log.block_number
+  end
+
+  defp compare_item(%TokenTransfer{} = token_transfer, json) do
+    assert Address.checksum(token_transfer.from_address_hash) == json["from"]["hash"]
+    assert Address.checksum(token_transfer.to_address_hash) == json["to"]["hash"]
+    assert to_string(token_transfer.transaction_hash) == json["tx_hash"]
+    assert json["timestamp"] == nil
+    assert json["method"] == nil
+    assert to_string(token_transfer.block_hash) == json["block_hash"]
+    assert to_string(token_transfer.log_index) == json["log_index"]
+    assert check_total(Repo.preload(token_transfer, [{:token, :contract_address}]).token, json["total"], token_transfer)
   end
 
   defp compare_item(%Transaction{} = transaction, json, wl_names) do
@@ -992,47 +1177,6 @@ defmodule BlockScoutWeb.API.V2.TransactionControllerTest do
                ],
                else: []
              )
-  end
-
-  defp compare_item(%InternalTransaction{} = internal_tx, json) do
-    assert internal_tx.block_number == json["block"]
-    assert to_string(internal_tx.gas) == json["gas_limit"]
-    assert internal_tx.index == json["index"]
-    assert to_string(internal_tx.transaction_hash) == json["transaction_hash"]
-    assert Address.checksum(internal_tx.from_address_hash) == json["from"]["hash"]
-    assert Address.checksum(internal_tx.to_address_hash) == json["to"]["hash"]
-  end
-
-  defp compare_item(%Log{} = log, json) do
-    assert to_string(log.data) == json["data"]
-    assert log.index == json["index"]
-    assert Address.checksum(log.address_hash) == json["address"]["hash"]
-    assert to_string(log.transaction_hash) == json["tx_hash"]
-  end
-
-  defp compare_item(%TokenTransfer{} = token_transfer, json) do
-    assert Address.checksum(token_transfer.from_address_hash) == json["from"]["hash"]
-    assert Address.checksum(token_transfer.to_address_hash) == json["to"]["hash"]
-    assert to_string(token_transfer.transaction_hash) == json["tx_hash"]
-    assert json["timestamp"] == nil
-    assert json["method"] == nil
-    assert to_string(token_transfer.block_hash) == json["block_hash"]
-    assert to_string(token_transfer.log_index) == json["log_index"]
-    assert check_total(Repo.preload(token_transfer, [{:token, :contract_address}]).token, json["total"], token_transfer)
-  end
-
-  defp compare_item(%Transaction{} = transaction, json, wl_names) do
-    assert to_string(transaction.hash) == json["hash"]
-    assert transaction.block_number == json["block"]
-    assert to_string(transaction.value.value) == json["value"]
-    assert Address.checksum(transaction.from_address_hash) == json["from"]["hash"]
-    assert Address.checksum(transaction.to_address_hash) == json["to"]["hash"]
-
-    assert json["to"]["watchlist_names"] ==
-             if(wl_names[transaction.to_address_hash], do: [wl_names[transaction.to_address_hash]], else: [])
-
-    assert json["from"]["watchlist_names"] ==
-             if(wl_names[transaction.from_address_hash], do: [wl_names[transaction.from_address_hash]], else: [])
   end
 
   defp check_paginated_response(first_page_resp, second_page_resp, txs) do
